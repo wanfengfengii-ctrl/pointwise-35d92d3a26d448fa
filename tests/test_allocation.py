@@ -119,3 +119,29 @@ class AllocationTests(StationCase):
             tickets = load_shift_commitments(conn, self.shift).tickets
         self.assertEqual([(ticket.ticket_id, ticket.ordinal) for ticket in tickets], [(winners[0], 1)])
         self.assertEqual(self.seal(winners[0]).report.value_ug_l, 7)
+
+    def test_seal_honours_each_tickets_window_not_a_stale_preview(self):
+        r, s = self.capture(self.r, self.s)
+        self.admit('A')
+        stale_preview = self.station.preview_ticket(self.shift, 'A')
+        self.assertEqual([item.provenance.original_no for item in stale_preview.candidates], ['r', 's'])
+        # B can only take r; A must therefore be signed with s even though the
+        # earlier preview still lists r first.
+        self.admit('B', 'low')
+        a = self.seal('A')
+        b = self.seal('B')
+        self.assertEqual((a.report.provenance.original_no, b.report.provenance.original_no), ('s', 'r'))
+        self.assertEqual((a.report.value_ug_l, b.report.value_ug_l), (11, 7))
+        self.assertEqual(a.report.original_id, s.original_id)
+        self.assertEqual(b.report.original_id, r.original_id)
+
+    def test_preview_leaves_no_occupation(self):
+        r, s = self.capture(self.r, self.s)
+        self.admit('A')
+        self.station.preview_ticket(self.shift, 'A')
+        self.station.preview_ticket(self.shift, 'A')
+        with self.station.operations() as conn:
+            self.assertEqual(load_shift_commitments(conn, self.shift).claims, ())
+        self.admit('B', 'low')
+        self.assertEqual(self.seal('B').report.provenance.original_no, 'r')
+        self.assertEqual(self.seal('A').report.provenance.original_no, 's')

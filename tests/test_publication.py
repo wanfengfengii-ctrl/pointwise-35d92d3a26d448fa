@@ -113,3 +113,27 @@ class PublicationTests(StationCase):
         self.assertEqual(new_pair.report.original_id, s.original_id)
         self.assertEqual(self.reopen().read_report(request_id='qA'), new_pair)
         self.assertEqual(self.seal('B').report.original_id, r.original_id)
+
+    def test_retired_attempt_cannot_publish_after_its_claim_is_released(self):
+        r, s = self.capture(self.r, self.s)
+        self.admit('A')
+
+        def pause_first_attempt(stage):
+            if stage != 'after_claim':
+                return
+            station = self.reopen()
+            with self.assertRaises(SaveFailed):
+                station.seal_ticket('qA', self.shift, 'A', checkpoint=self.at('before_receipt', SaveFailed('rollback')))
+            self.assertIsNone(station.read_report(request_id='qA'))
+            station.admit_ticket(self.shift, 'B', 'low')
+
+        # The first writer resumes only after another operator retired its claim.
+        with self.assertRaises(SaveFailed):
+            self.seal('A', checkpoint=pause_first_attempt)
+        station = self.reopen()
+        self.assertIsNone(station.read_report(request_id='qA'))
+        with station.operations() as conn:
+            self.assertEqual(load_shift_commitments(conn, self.shift).claims, ())
+        self.assertEqual(station.seal_ticket('qA', self.shift, 'A').report.original_id, s.original_id)
+        self.assertEqual(station.seal_ticket('qB', self.shift, 'B').report.value_ug_l, 7)
+        self.assertEqual([row.ticket_id for row in station.close_and_read_shift(self.shift).lines], ['A', 'B'])

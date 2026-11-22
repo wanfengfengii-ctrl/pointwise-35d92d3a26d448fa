@@ -1,16 +1,21 @@
-from dataclasses import replace
 import sqlite3
 
-from station.allocation.commitments import get_ticket
-from station.allocation.preview import preview_ticket
-from station.allocation.settlement import prepare_seal, settle_seal_claim
+from station.allocation.commitments import (
+    get_ticket, load_shift_commitments,
+)
+from station.allocation.settlement import (
+    get_active_seal_claim, prepare_seal, preserves_assignment, settle_seal_claim,
+)
 from station.allocation.shifts import get_shift
 from station.archive.receipts import build_first_receipt, ensure_receipt_schema, insert_first_receipt
 from station.archive.reports import build_sealed_report, ensure_report_schema, insert_report
 from station.archive.retrieval import read_publication_outcome
+from station.capture.storage import get_original, list_shift_originals
 from station.database import (
-    Conflict, IntegrityViolation, NotFound, Pending, SaveFailed, Unavailable, require_name, run_checkpoint,
+    Conflict, IntegrityViolation, NotFound, Pending, SaveFailed, require_name, run_checkpoint,
 )
+from station.protocol.eligibility import eligible_for_ticket
+from station.protocol.revisions import get_protocol_revision
 
 
 def ensure_publication_schema(conn):
@@ -79,19 +84,50 @@ def _prepare_attempt(store, attempt):
     return attempt, claim
 
 
-def _commit_attempt(store, attempt, claim, checkpoint):
+def _fence(conn, current):
+    """Retire a pending attempt that no longer owns the ticket's seal claim.
+
+    A stale writer resumed after its attempt was failed and its binding released
+    must not sign: the attempt becomes a definite not-signed outcome under its
+    own number, while the released claim is left to the newer owner.
+    """
+    conn.execute('''
+        UPDATE publication_attempts SET state = 'failed', original_id = NULL
+        WHERE attempt_id = ? AND state = 'pending'
+    ''', (current.attempt_id,))
+    return _current_attempt(conn, current), False
+
+
+def _commit_attempt(store, attempt, checkpoint):
     with store.archive(write=True) as conn:
         current = _current_attempt(conn, attempt)
-        if current.state == 'committed':
+        if current.state != 'pending':
             return current, False
-        preview = preview_ticket(store, current.shift_id, current.ticket_id)
-        if not preview.candidates:
-            raise Unavailable('no visible original for publication')
-        original = preview.candidates[0]
         with store.operations() as operations:
             shift = get_shift(operations, current.shift_id)
-        selected = replace(claim, original_id=original.original_id)
-        report = build_sealed_report(selected, shift.revision_id, original)
+            revision = get_protocol_revision(operations, shift.revision_id)
+            stored = get_active_seal_claim(operations, current.shift_id, current.ticket_id)
+            if (
+                stored is None or stored.state != 'pending'
+                or (stored.attempt_id, stored.request_id) != (current.attempt_id, current.request_id)
+            ):
+                return _fence(conn, current)
+            ticket = get_ticket(operations, current.shift_id, current.ticket_id)
+            commitments = load_shift_commitments(operations, current.shift_id)
+            originals = list_shift_originals(operations, current.shift_id)
+            original = get_original(operations, stored.original_id)
+            still_covers = (
+                original.shift_id == shift.shift_id
+                and eligible_for_ticket(revision, shift, ticket, original)
+                and preserves_assignment(
+                    revision, shift, commitments, ticket, original, originals
+                )
+            )
+        if not still_covers:
+            raise SaveFailed(
+                f'the claimed original no longer preserves a complete assignment for {ticket.ticket_id}'
+            )
+        report = build_sealed_report(stored, shift.revision_id, original)
         insert_report(conn, report)
         run_checkpoint(checkpoint, 'before_receipt')
         insert_first_receipt(conn, build_first_receipt(report))
@@ -137,7 +173,7 @@ def seal_ticket(store, request_id, shift_id, ticket_id, *, checkpoint=None):
         outcome, claim = _prepare_attempt(store, attempt)
         if claim is not None:
             run_checkpoint(checkpoint, 'after_claim')
-            outcome, newly_committed = _commit_attempt(store, attempt, claim, checkpoint)
+            outcome, newly_committed = _commit_attempt(store, attempt, checkpoint)
     except (SaveFailed, sqlite3.Error) as exc:
         cause = exc
         try:
