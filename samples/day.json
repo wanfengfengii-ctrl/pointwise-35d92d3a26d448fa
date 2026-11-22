@@ -1,0 +1,20 @@
+{
+  "shift": "day",
+  "site": "north-inlet",
+  "revision": "P1",
+  "source": "meter-day-export",
+  "projects": {
+    "regular": {
+      "min": 0, "max": 25, "unit": "μg/L", "sites": ["north-inlet"],
+      "start": "2026-06-15T10:00:00Z", "end": "2026-06-15T10:15:00Z", "qualities": ["ok"]
+    },
+    "low": {
+      "min": 0, "max": "0.007", "unit": "mg/L", "sites": ["north-inlet"],
+      "start": "2026-06-15T10:00:00Z", "end": "2026-06-15T10:15:00Z", "qualities": ["ok"]
+    }
+  },
+  "readings": [
+    {"original_no": "r", "position": 1, "site": "north-inlet", "sampled_at": "2026-06-15T18:00:00+08:00", "value": "0.007", "unit": "mg/L", "quality": "ok"},
+    {"original_no": "s", "position": 2, "site": "north-inlet", "sampled_at": "2026-06-15T10:05:00Z", "value": "11", "unit": "μg/L", "quality": "ok"}
+  ]
+}
